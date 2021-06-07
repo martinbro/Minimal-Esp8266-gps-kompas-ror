@@ -1,23 +1,3 @@
-// #include <ArduinoWiFiServer.h>
-// #include <BearSSLHelpers.h>
-// #include <CertStoreBearSSL.h>
-// #include <ESP8266WiFi.h>
-// #include <ESP8266WiFiAP.h>
-// #include <ESP8266WiFiGeneric.h>
-// #include <ESP8266WiFiGratuitous.h>
-// #include <ESP8266WiFiMulti.h>
-// #include <ESP8266WiFiScan.h>
-// #include <ESP8266WiFiSTA.h>
-// #include <ESP8266WiFiType.h>
-// #include <WiFiClient.h>
-// #include <WiFiClientSecure.h>
-// #include <WiFiClientSecureBearSSL.h>
-// #include <WiFiServer.h>
-// #include <WiFiServerSecure.h>
-// #include <WiFiServerSecureBearSSL.h>
-// #include <WiFiUdp.h>
-
-
 
 /****************************************************************************************************************************
   ESP8266-Minimal-Client: Minimal ESP8266 Websockets Client
@@ -25,18 +5,29 @@
   This sketch:
         1. Connects to a WiFi network
         2. Connects to a Websockets server
-        3. Sends the websockets server a message 
+           a. Send Calculated val to a Webserver using Websockets
+           b. Get Waypoints info& PID values using Websockets
+        3. Connects to BNO055
+        4. Connects to GPS
+        5. Connects to Servo
+        6. Connects to Remote Control Device (not implemented)
+           Set Rudder Opreration in two MODES MANUAL and AUTO.
+        7. Calculate course using datafusion
+        8. Calculate position and speed using dead reckoning (not implemented)
+        9. Calculate rudder position using PID (not implemented) only in AUTO MODE
+        10. Stores Data in External storige (not implementet)
+
 
     NOTE:
     The sketch dosen't check or indicate about errors while connecting to
     WiFi or to the websockets server. For full example you might want
     to try the example named "ESP8266-Client".
 
-
   Hardware:
         An ESP8266 board.
         GPS
         BNO055
+        Servo (rudder)
 
   Originally Created  : 15/02/2019
   Original Author     : By Gil Maimon
@@ -61,9 +52,10 @@
 /*Globale variable************************************************ */
 static const int RXPin = 13, TXPin = 12;
 static const uint32_t GPSBaud = 9600;
-uint16_t BNO055_SAMPLERATE_DELAY_MS = 1;
+uint16_t BNO055_SAMPLERATE_DELAY_MS = 5;
 uint16_t WiFi_DELAY_MS = 100;
 static uint32_t t0,t1,tWiFi = 0;
+
 
 // The TinyGPS++ object /////////////////////////
 TinyGPSPlus gps;
@@ -76,7 +68,7 @@ WebsocketsClient client;
 Servo servo;
 // BNO055 ///////////////////////////////////////
 
-/* Set the delay between fresh samples */
+
 
 // Check I2C device address and correct line below (by default address is 0x29 or 0x28)
 //                                   id, address
@@ -85,18 +77,28 @@ float mx,my,mz = 0.0;
 float gx,gy,gz,dt = 0.0;
 float rotx,roty,rotz = 0.0;
 float ax,ay,az = 0.0;
+float dvx,dvy = 0.0;
+//float dxRaw,dyRaw,dzRaw = 0.0;
 float kurs,kursRaw,roll,rollRaw,pitch,pitchRaw = 0.0;
 float K = 0.99;
 uint8_t systemC, gyroC, accelC, magC = 0;
 float bnoData[10];
-
+float lg[]={-1.0,-1.0,-1.0,-1.0,-1.0,-1.0,-1.0,-1.0,-1.0,-1.0} ;
+float br[]={-1.0,-1.0,-1.0,-1.0,-1.0,-1.0,-1.0,-1.0,-1.0,-1.0} ;
+int antalWP =0;
 void setup() 
 {
   Serial.begin(115200);
   servo.attach(2); //D4
   delay(3000);
   while (!Serial);
-
+  servo.write(45);
+  delay(1000);
+  servo.write(135);
+  delay(1000);
+  servo.write(45);
+  delay(1000);
+  servo.write(135);
   
   //kommunikation mellem GPS og ESP8266
   ss.begin(GPSBaud);
@@ -196,6 +198,7 @@ void getBNO055val(){
   rollRaw = RollRaw*180/PI;
   pitchRaw = atan2(-ax,(ay*sin(RollRaw)+az*cos(RollRaw)))*180/PI; // vinkelrum +-90
   kursRaw = atan2(-my,mx)*180/PI;
+
   
   //Comperatorfilter på roll, og pitch, 99% gyro, 1% acc
   float k=0.99;//procent gyro
@@ -203,9 +206,6 @@ void getBNO055val(){
   pitch = (pitch + roty*dt)*k + pitchRaw*(1-k);
 
   //'Gyrostabiliserede' værdier
-  //Serial.print(roll); //Serial.print(", ");
-  //Serial.print(pitch); //Serial.print(", ");
-
   
   //roll & pitch i radianer
   float Roll = roll*PI/180;
@@ -219,6 +219,10 @@ void getBNO055val(){
   float kursGyroStabiliseret = (atan2(-Y,X)*180/PI);
   float gyrokurs = kurs +rotz*dt;
   
+//Beregner translationen fra accelerometret
+  dvx = (ax*cos(Pitch) + az*sin(Pitch))*dt;
+  dvy = (ax*sin(Roll)*sin(Pitch) + ay*cos(Roll) - az * sin(Roll)*cos(Pitch))*dt;
+
   // løser et fjollet diskontinuitetsproblem mellem gyro og mag. (Første del)
   // får mag til at være kontinuært over 180
   if(gyrokurs - kursGyroStabiliseret < -180){
@@ -300,7 +304,7 @@ int initConnectToWifi(){
       WiFi.begin("HUAWEI","1q2w3e4r");
       Serial.println("Prøver at forbinde til mobiltelefon");
     }
-    
+  
 
     // Wait some time to connect to wifi
     for (int i = 0; i < 10 && WiFi.status() != WL_CONNECTED; i++) 
@@ -328,29 +332,53 @@ void onMessageCallback(WebsocketsMessage message)
 {
   Serial.print("Got Message: ");
   Serial.println(message.data());
-  char json1[] = "{\"name\":\"gps\",\"time\":1351824120,\"data\":[48.756080,2.302038]}";
-
+  
   DynamicJsonDocument doc1(1024);
   deserializeJson(doc1, message.data());
+  //int nr = doc1["nr"];
+  float wp_lg = doc1["lg"];
+  //float wp_br = doc1["br"];
+  if (wp_lg<0) {
+    int i= 0;
+    while(i <10){
+      lg[i] = -1,0;
+      br[i] = -1,0;
+      i++;
+      antalWP = 0;
+    }
+  }else{
+     lg[antalWP]= doc1["lg"];
+     br[antalWP]= doc1["br"];
+      antalWP++;
+  }
+  Serial.print("Tester hvordan den håndterer en ikke kendt værdi: ");
+  Serial.println(lg[0]);
+
   if(doc1["mssg"]<90){
     int udl= doc1["mssg"];
     int udlg = 90 + udl;
     servo.write(udlg);
   }
+
   String n = doc1["name"];
-  WiFi_DELAY_MS = doc1["rate"];
+ // WiFi_DELAY_MS = doc1["rate"];
   WiFi_DELAY_MS = 100;
   K = doc1["k"];
-  K=0.99;
-  double r1 = doc1["rate1"];
-  
-  Serial.print(n);
+   K=0.99;
  
-  Serial.print(", ");
-  Serial.print(K);
-  Serial.print(", ");
-  Serial.println(r1);
-  //Serial.println(doc1);
+  
+  //Serial.print(n);
+ 
+  //Serial.print(", ");
+  i= 0;
+  while(i < antalWP ){
+   Serial.print(br[i],6);
+   Serial.print(", "); 
+   Serial.println(lg[i],6); 
+   i++; 
+  }
+  Serial.println();
+
 }
 
 void onEventsCallback(WebsocketsEvent event, String data) 
