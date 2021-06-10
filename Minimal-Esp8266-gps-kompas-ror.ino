@@ -48,35 +48,34 @@
 #include <strings_en.h>
 #include <WiFiManager.h>
 
-
 /*Globale variable************************************************ */
 static const int RXPin = 13, TXPin = 12;
-static const uint32_t GPSBaud = 9600;
+
+static const uint16_t GPSBaud = 9600;
 uint16_t BNO055_SAMPLERATE_DELAY_MS = 5;
 uint16_t WiFi_DELAY_MS = 100;
-static uint32_t t0,t1,tWiFi = 0;
+static uint32_t t0 = 0;
+static uint32_t t1,tWiFi = 0;
+bool AUTOMODE = false;
 
-
-// The TinyGPS++ object /////////////////////////
+// The TinyGPS++ object 
 TinyGPSPlus gps;
 
 // The serial connection to the GPS device
 SoftwareSerial ss(RXPin, TXPin);
-using namespace websockets2_generic;
 
+using namespace websockets2_generic;
 WebsocketsClient client;
 Servo servo;
-// BNO055 ///////////////////////////////////////
-
-
-
+// BNO055 //
 // Check I2C device address and correct line below (by default address is 0x29 or 0x28)
-//                                   id, address
-Adafruit_BNO055 bno = Adafruit_BNO055(55, 0x29);
+Adafruit_BNO055 bno = Adafruit_BNO055(55, 0x29);//(id,address)
+
 float mx,my,mz = 0.0;
 float gx,gy,gz,dt = 0.0;
 float rotx,roty,rotz = 0.0;
 float ax,ay,az = 0.0;
+float dN,dE = 0.0;// Estimeret pos
 float dvx,dvy = 0.0;
 //float dxRaw,dyRaw,dzRaw = 0.0;
 float kurs,kursRaw,roll,rollRaw,pitch,pitchRaw = 0.0;
@@ -85,27 +84,39 @@ uint8_t systemC, gyroC, accelC, magC = 0;
 float bnoData[10];
 float lg[]={-1.0,-1.0,-1.0,-1.0,-1.0,-1.0,-1.0,-1.0,-1.0,-1.0} ;
 float br[]={-1.0,-1.0,-1.0,-1.0,-1.0,-1.0,-1.0,-1.0,-1.0,-1.0} ;
-int antalWP =0;
+short antalWP = 0;
+short activeWP = 0;
+struct nav_t{
+  float K; //Ønsket Kurs:Set point
+  float dist; // afatand til WP
+  float WPnr; //0
+}; nav_t nav ={0,0,0};//initialiseret
+
+struct pos_t{
+  float br;
+  float lg;
+  float ti;
+};
+pos_t pos0 ={-1.0,-1.0,0};
+pos_t pos1 ={-1.0,-1.0,0};
+float sp_kurs = 0.0;
+float e = 0.0;
+float P = 1;
+float I = 0;
+float D = 0;
+float ror = 0.0;
+
 void setup() 
 {
-  Serial.begin(115200);
+  delay(1000);
   servo.attach(2); //D4
-  delay(3000);
-  while (!Serial);
-  servo.write(45);
-  delay(1000);
-  servo.write(135);
-  delay(1000);
-  servo.write(45);
-  delay(1000);
-  servo.write(135);
-  
+  Serial.begin(115200);
+  Serial.println("Setup start");
   //kommunikation mellem GPS og ESP8266
   ss.begin(GPSBaud);
 
-  //etaplering af wifi forbindelsen er flyttet ned i en funktion 
-  int ip=-1;
-  ip = initConnectToWifi();
+  //etablering af wifi forbindelsen
+  int ip = initConnectToWifi();
   
   // run callback when messages are received
   client.onMessage(onMessageCallback);
@@ -125,11 +136,10 @@ void setup()
 }
 
 int i = 0;
-int j = 0;
+
 void loop() 
 {  
   getBNO055val();
-  //Serial.print(gx);
   
   // Sends information every time a new sentence is correctly encoded.
   while (ss.available() > 0){
@@ -137,24 +147,54 @@ void loop()
       i++;
       if (gps.location.isValid()){
         if(i%9==0 ){//Primitiv netværks begrænsning
-          sendGPSdata(gps); 
-              
+          //pos1={pos0.br,pos0.lg,pos0.ti};//overflødig???
+          pos0={gps.location.lat(),gps.location.lng(),gps.time.hour()*3600+gps.time.minute()*60+gps.time.second()+gps.time.centisecond()/100};
+//           if(antalWP>0){//flyttes til en selvstendig funktion
+//             float br_forandring = br[activeWP]- pos0.br;
+//             float afvigning = (lg[activeWP]  - pos0.lg)*cos(pos0.br*PI/180);//bruger bredde i stedet for middelbredde
+//             sp_kurs = atan2(afvigning,br_forandring)*180/PI;
+//             if(sp_kurs<0){sp_kurs = 180 + sp_kurs;}
+// //            Serial.print("br[activeWP]: ");  Serial.print(br[activeWP],6 );
+// //            Serial.print("pos0.br: ");  Serial.print(pos0.br,6 );
+// //            Serial.print(" | lg[activeWP]: ");  Serial.print(lg[activeWP],6 );
+// //            Serial.print(",pos0.lg: ");  Serial.print(pos0.lg,6 );
+// //            Serial.print(" | br forandring: ");  Serial.print(br_forandring,6 );
+// //            Serial.print(" afvigning: ");  Serial.print(afvigning,6);
+//            Serial.print(" , Set Point: ");  Serial.print(sp_kurs,6);
+//             Serial.print(" , PV kurs: ");  Serial.print(kurs,6); 
+//             float e = sp_kurs - kurs;
+//             while(e>180){e = e-360;};
+//             while(e<-180){e = e + 360;};
+//             Serial.print(" , e: ");  Serial.print(e,6);
+//             ror = P*e;
+//             if(ror < -60){ror=-60;};
+//             if(ror > 60){ror = 60;};//ror begrænsning
+            
+//             int udlg = int (90 + round(ror));
+//             Serial.print(" , udlaeg: ");  Serial.println(udlg);
+//    // servo.write(udlg);
+//           }
+          
+          sendGPSdata(gps);       
   } } } }
   
   client.poll();
 }
+
 //**************** FUNKTIONER ************************
 //////////////////////Kompas///////////////////////////////
+
 void initBNO055(Adafruit_BNO055 bno){
   /* Initialise the sensor */
-  if (!bno.begin())
-  {
-    /* There was a problem detecting the BNO055 ... check your connections */
+  
+  if (!bno.begin()){
     Serial.print("Ooops, no BNO055 detected ... Check your wiring or I2C ADDR!");
-    while (1);
+    delay(1000);
+    ESP. restart();
+  //  while (1);
   }
   delay(1500);
-  bno.setExtCrystalUse(true); /* Bruger microprocessorens  clock (jeg bruger en esp88266)- frem for BNO055'ens. Anbefales af alle */ 
+  bno.setExtCrystalUse(true); /* Bruger microprocessorens  clock */ 
 }
 
 void getBNO055val(){
@@ -163,8 +203,7 @@ void getBNO055val(){
   imu::Vector<3> m = bno.getVector( Adafruit_BNO055::VECTOR_MAGNETOMETER);
   imu::Vector<3> a = bno.getVector( Adafruit_BNO055::VECTOR_ACCELEROMETER);
   
- 
-  /* Beregner tidsdifferencen dt mellem læsninger - til brug for gyro (jf.: kurs,efter = kurs,før + ROT*dt) */
+  /* Beregner tidsdifferencen dt mellem læsninger */
   t1 = millis(); 
   if(t0==0){t0 = t1;}//initialiserer
   dt =(t1-t0);
@@ -194,32 +233,30 @@ void getBNO055val(){
   gz = gz + rotz*dt;
 
   // Roll, Pitch og Yaw (kurs) beregnes - bare trigonometri
-  float RollRaw = atan2(ay,az); //rollRaw i radianer vinkelrum +-180
+  float RollRaw = atan2(ay,az); //rollRaw i radianer
   rollRaw = RollRaw*180/PI;
-  pitchRaw = atan2(-ax,(ay*sin(RollRaw)+az*cos(RollRaw)))*180/PI; // vinkelrum +-90
+  pitchRaw = atan2(-ax,(ay*sin(RollRaw)+az*cos(RollRaw)))*180/PI; 
   kursRaw = atan2(-my,mx)*180/PI;
 
-  
   //Comperatorfilter på roll, og pitch, 99% gyro, 1% acc
   float k=0.99;//procent gyro
   roll = (roll + rotx*dt)*k + rollRaw*(1-k); 
   pitch = (pitch + roty*dt)*k + pitchRaw*(1-k);
 
   //'Gyrostabiliserede' værdier
-  
   //roll & pitch i radianer
   float Roll = roll*PI/180;
   float Pitch =pitch*PI/180;
 
   //tilt kompenseret kurs.(Jeg kan vise dig beregningen hvis du er interesseret Jørgen - fås direkte ud fra rotationsmatriserne for roll og pitch)  
-  //(Findes også mange steder på nettet! Pas dog på wikipiedia - der har byttet om på roll, pitch og yaw... Hmmm det ligner dem ellers ikke...) 
+  //(Findes også mange steder på nettet! Pas dog på wikipiedia - der har de byttet om på roll, pitch og yaw... Hmmm det ligner dem ellers ikke...) 
   // NB! her anvendes de gode! værdier for roll og pitch i radianer!
   float X = mx*cos(Pitch) + mz*sin(Pitch);
   float Y = mx*sin(Roll)*sin(Pitch) + my*cos(Roll) - mz * sin(Roll)*cos(Pitch);
   float kursGyroStabiliseret = (atan2(-Y,X)*180/PI);
   float gyrokurs = kurs +rotz*dt;
   
-//Beregner translationen fra accelerometret
+//Beregner hastighedsændringer fra accelerometret
   dvx = (ax*cos(Pitch) + az*sin(Pitch))*dt;
   dvy = (ax*sin(Roll)*sin(Pitch) + ay*cos(Roll) - az * sin(Roll)*cos(Pitch))*dt;
 
@@ -236,24 +273,64 @@ void getBNO055val(){
     }
   }
   kurs = (K*gyrokurs + (1-K)*kursGyroStabiliseret);
-  
-  //Serial.print(kursGyroStabiliseret); //Serial.print(", ");
-  //Serial.print(kurs); //Serial.print(", ");
-    //Auto kalibreringens status: (integer) 0=lavest niveau (forkast data), 3=højste niveau (fuldt kalibreret data)
-  //uint8_t systemC, gyroC, accelC, magC = 0;
+    
+  //Auto kalibreringens status: (integer) 0=lavest niveau (forkast data), 3=højste niveau (fuldt kalibreret data)
   bno.getCalibration(&systemC, &gyroC, &accelC, &magC);
+  
+  
+  //KUN HVIS GPS SIGNALER
+  if(pos0.br>0){ 
+    //Bestikregning
+    dN += cos(-kurs*PI/180)*dt; // pos
+    dE += -sin(-kurs*PI/180)*cos((pos0.br+pos0.br)/2)*dt;
+   // Serial.print("Bestik: "); Serial.print(dN); Serial.print(", "); Serial.println(dE);
+
+    if(AUTOMODE){
+      //TO DO Beregner kurs som bestikregning
+       
+    }
+    if(antalWP>0){
+            float br_forandring = br[activeWP]- pos0.br;
+            float afvigning = (lg[activeWP]  - pos0.lg)*cos(pos0.br*PI/180);//bruger bredde i stedet for middelbredde
+            sp_kurs = atan2(afvigning,br_forandring)*180/PI;
+//            Serial.print("br[activeWP]: ");  Serial.print(br[activeWP],6 );
+//            Serial.print("pos0.br: ");  Serial.print(pos0.br,6 );
+//            Serial.print(" | lg[activeWP]: ");  Serial.print(lg[activeWP],6 );
+//            Serial.print(",pos0.lg: ");  Serial.print(pos0.lg,6 );
+//            Serial.print(" | br forandring: ");  Serial.print(br_forandring,6 );
+//            Serial.print(" afvigning: ");  Serial.print(afvigning,6);
+  Serial.print(" , Set Point: ");  Serial.print(sp_kurs,6);
+            Serial.print(" , PV kurs: ");  Serial.print(kurs,6); 
+            float e = sp_kurs - kurs;
+            while(e>180){e = e-360;};
+            while(e<-180){e = e + 360;};
+            Serial.print(" , e: ");  Serial.print(e,6);
+            ror = 2*P*e;
+            if(ror < -90){ror=-90;};
+            if(ror > 90){ror = 90;};//ror begrænsning
+            
+            int udlg = int (90 + round(ror));
+            Serial.print(" , udlaeg: ");  Serial.println(udlg);
+            servo.write(udlg);
+          }
+    
+  }
+  
  
   tWiFi = tWiFi + dt*1000;
   if(tWiFi > WiFi_DELAY_MS){
     tWiFi = 0;
-    const int capacity = JSON_OBJECT_SIZE(7+2);
+    const int capacity = JSON_OBJECT_SIZE(10+2);
           StaticJsonDocument<capacity> doc;
           doc["name"] = "bno";
           doc["roll"] = roll;
           doc["pitch"] = pitch;
           doc["dt"]= dt;
           doc["kurs"] = kurs;
-          doc["rawkurs"] = kursGyroStabiliseret;
+          doc["rawkurs"] = kursRaw;
+          doc["rawkursstab"] = kursGyroStabiliseret;
+          doc["sp"]=sp_kurs;
+          doc["ror"]= ror;
           doc["kal"]= gyroC*1000+accelC*100+magC*10+systemC;
           String output = "";
           serializeJson(doc, output);
@@ -267,6 +344,7 @@ void getBNO055val(){
 
 ////////////////////// GPS ////////////////////////////////
 void sendGPSdata(TinyGPSPlus gps){
+          
           const int capacity = JSON_OBJECT_SIZE(10+2);
           StaticJsonDocument<capacity> doc;
           doc["name"] = "navigation";
@@ -344,8 +422,10 @@ void onMessageCallback(WebsocketsMessage message)
       lg[i] = -1,0;
       br[i] = -1,0;
       i++;
-      antalWP = 0;
+
     }
+    antalWP = 0;
+    activeWP = 0;
   }else{
      lg[antalWP]= doc1["lg"];
      br[antalWP]= doc1["br"];
@@ -355,9 +435,7 @@ void onMessageCallback(WebsocketsMessage message)
   Serial.println(lg[0]);
 
   if(doc1["mssg"]<90){
-    int udl= doc1["mssg"];
-    int udlg = 90 + udl;
-    servo.write(udlg);
+    
   }
 
   String n = doc1["name"];
