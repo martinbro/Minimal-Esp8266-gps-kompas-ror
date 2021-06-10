@@ -98,7 +98,7 @@ struct pos_t{
   float ti;
 };
 pos_t pos0 ={-1.0,-1.0,0};
-pos_t pos1 ={-1.0,-1.0,0};
+//pos_t pos1 ={-1.0,-1.0,0};
 float sp_kurs = 0.0;
 float e = 0.0;
 float P = 1;
@@ -147,34 +147,13 @@ void loop()
       i++;
       if (gps.location.isValid()){
         if(i%9==0 ){//Primitiv netværks begrænsning
-          //pos1={pos0.br,pos0.lg,pos0.ti};//overflødig???
-          pos0={gps.location.lat(),gps.location.lng(),gps.time.hour()*3600+gps.time.minute()*60+gps.time.second()+gps.time.centisecond()/100};
-//           if(antalWP>0){//flyttes til en selvstendig funktion
-//             float br_forandring = br[activeWP]- pos0.br;
-//             float afvigning = (lg[activeWP]  - pos0.lg)*cos(pos0.br*PI/180);//bruger bredde i stedet for middelbredde
-//             sp_kurs = atan2(afvigning,br_forandring)*180/PI;
-//             if(sp_kurs<0){sp_kurs = 180 + sp_kurs;}
-// //            Serial.print("br[activeWP]: ");  Serial.print(br[activeWP],6 );
-// //            Serial.print("pos0.br: ");  Serial.print(pos0.br,6 );
-// //            Serial.print(" | lg[activeWP]: ");  Serial.print(lg[activeWP],6 );
-// //            Serial.print(",pos0.lg: ");  Serial.print(pos0.lg,6 );
-// //            Serial.print(" | br forandring: ");  Serial.print(br_forandring,6 );
-// //            Serial.print(" afvigning: ");  Serial.print(afvigning,6);
-//            Serial.print(" , Set Point: ");  Serial.print(sp_kurs,6);
-//             Serial.print(" , PV kurs: ");  Serial.print(kurs,6); 
-//             float e = sp_kurs - kurs;
-//             while(e>180){e = e-360;};
-//             while(e<-180){e = e + 360;};
-//             Serial.print(" , e: ");  Serial.print(e,6);
-//             ror = P*e;
-//             if(ror < -60){ror=-60;};
-//             if(ror > 60){ror = 60;};//ror begrænsning
-            
-//             int udlg = int (90 + round(ror));
-//             Serial.print(" , udlaeg: ");  Serial.println(udlg);
-//    // servo.write(udlg);
-//           }
-          
+          //gemmer positionsoplysninger
+          pos0={
+            gps.location.lat(),
+            gps.location.lng(),
+            gps.time.hour()*3600+gps.time.minute()*60+gps.time.second()+gps.time.centisecond()/100
+          };
+
           sendGPSdata(gps);       
   } } } }
   
@@ -293,13 +272,8 @@ void getBNO055val(){
             float br_forandring = br[activeWP]- pos0.br;
             float afvigning = (lg[activeWP]  - pos0.lg)*cos(pos0.br*PI/180);//bruger bredde i stedet for middelbredde
             sp_kurs = atan2(afvigning,br_forandring)*180/PI;
-//            Serial.print("br[activeWP]: ");  Serial.print(br[activeWP],6 );
-//            Serial.print("pos0.br: ");  Serial.print(pos0.br,6 );
-//            Serial.print(" | lg[activeWP]: ");  Serial.print(lg[activeWP],6 );
-//            Serial.print(",pos0.lg: ");  Serial.print(pos0.lg,6 );
-//            Serial.print(" | br forandring: ");  Serial.print(br_forandring,6 );
-//            Serial.print(" afvigning: ");  Serial.print(afvigning,6);
-  Serial.print(" , Set Point: ");  Serial.print(sp_kurs,6);
+
+            Serial.print(" , Set Point: ");  Serial.print(sp_kurs,6);
             Serial.print(" , PV kurs: ");  Serial.print(kurs,6); 
             float e = sp_kurs - kurs;
             while(e>180){e = e-360;};
@@ -313,7 +287,6 @@ void getBNO055val(){
             Serial.print(" , udlaeg: ");  Serial.println(udlg);
             servo.write(udlg);
           }
-    
   }
   
  
@@ -335,7 +308,6 @@ void getBNO055val(){
           String output = "";
           serializeJson(doc, output);
           client.send( output);
-   
   }
 
   delay(BNO055_SAMPLERATE_DELAY_MS);
