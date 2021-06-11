@@ -49,7 +49,7 @@
 #include <WiFiManager.h>
 
 /*Globale variable************************************************ */
-static const int RXPin = 13, TXPin = 12;
+//static const int RXPin = 13, TXPin = 12;
 
 static const uint16_t GPSBaud = 9600;
 uint16_t BNO055_SAMPLERATE_DELAY_MS = 5;
@@ -62,7 +62,9 @@ bool AUTOMODE = false;
 TinyGPSPlus gps;
 
 // The serial connection to the GPS device
-SoftwareSerial ss(RXPin, TXPin);
+//SoftwareSerial ss(RXPin, TXPin);
+SoftwareSerial ss(13, 12);
+SoftwareSerial tb(15, 14); // RX, TX /D8, D5 / gul grøn (twin board)
 
 using namespace websockets2_generic;
 WebsocketsClient client;
@@ -279,12 +281,13 @@ void getBNO055val(){
             while(e>180){e = e-360;};
             while(e<-180){e = e + 360;};
             Serial.print(" , e: ");  Serial.print(e,6);
-            ror = 2*P*e;
-            if(ror < -90){ror=-90;};
-            if(ror > 90){ror = 90;};//ror begrænsning
+            ror = P*e;
+            if(ror < -45){ror=-45;};
+            if(ror > 45){ror = 45;};//ror begrænsning
             
-            int udlg = int (90 + round(ror));
+            int udlg = int (90 + 2*round(ror));//ganger med 2 da der er er noget i vejen med min servo
             Serial.print(" , udlaeg: ");  Serial.println(udlg);
+            tb.print("udlg:"); tb.println(udlg);
             servo.write(udlg);
           }
   }
@@ -347,8 +350,8 @@ int initConnectToWifi(){
       Serial.println("Prøver at forbinde til LAPTOP-RJIJOOL9 4301");
       }
     if(j==1){
-      WiFi.begin("02495500","00809748");
-      Serial.println("Prøver at forbinde til privat net");
+      WiFi.begin("Marnav","");
+      Serial.println("Prøver at forbinde til Marnav");
       }
     if(j==2){
       WiFi.begin("HUAWEI","1q2w3e4r");
@@ -403,8 +406,7 @@ void onMessageCallback(WebsocketsMessage message)
      br[antalWP]= doc1["br"];
       antalWP++;
   }
-  Serial.print("Tester hvordan den håndterer en ikke kendt værdi: ");
-  Serial.println(lg[0]);
+ 
 
   if(doc1["mssg"]<90){
     
