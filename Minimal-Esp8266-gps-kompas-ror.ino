@@ -1,8 +1,8 @@
-
 /****************************************************************************************************************************
   ESP8266-Minimal-Client: Minimal ESP8266 Websockets Client
 
   This sketch:
+        0. Connects to a twin board.
         1. Connects to a WiFi network
         2. Connects to a Websockets server
            a. Send Calculated val to a Webserver using Websockets
@@ -34,7 +34,7 @@
   Original Repository : https://github.com/gilmaimon/ArduinoWebsockets
 
 *****************************************************************************************************************************/
-#include "defines.h"
+
 #include <WebSockets2_Generic.h>
 #include <ESP8266WiFi.h>
 #include <TinyGPS++.h>
@@ -48,59 +48,42 @@
 #include <strings_en.h>
 #include <WiFiManager.h>
 
-/*Globale variable************************************************ */
-//static const int RXPin = 13, TXPin = 12;
+/* Konstanter ************************************************ */
+static const uint8_t RORpwm = 14; //D5 som udlæg output
+static const uint8_t RORpwm1 = 12; //D5 som udlæg output
 
+// static const int SCL_gyro = 5, SDA_gyro = 4;// Gyro: D2 (SCL), D1(SDA)
+static const int RXPin = 13, TXPin = 15;// GPS: D8 (RX), D7(TX)
 static const uint16_t GPSBaud = 9600;
+
+/* Globale variable ************************************************ */
 uint16_t BNO055_SAMPLERATE_DELAY_MS = 5;
 uint16_t WiFi_DELAY_MS = 100;
-static uint32_t t0 = 0;
-static uint32_t t1,tWiFi = 0;
-bool AUTOMODE = false;
+static uint32_t t0, t0_main_loop = 0 ;
+static uint32_t t1, t1_main_loop, tWiFi = 0;
 
-// The TinyGPS++ object 
-TinyGPSPlus gps;
-
-// The serial connection to the GPS device
-//SoftwareSerial ss(RXPin, TXPin);
-SoftwareSerial ss(13, 12);
-SoftwareSerial tb(15, 14); // RX, TX /D8, D5 / gul grøn (twin board)
-
-using namespace websockets2_generic;
-WebsocketsClient client;
-Servo servo;
-// BNO055 //
-// Check I2C device address and correct line below (by default address is 0x29 or 0x28)
-Adafruit_BNO055 bno = Adafruit_BNO055(55, 0x29);//(id,address)
-
+// Der er performanceforbedring ved at anvende simple variable frem for structs
 float mx,my,mz = 0.0;
 float gx,gy,gz,dt = 0.0;
 float rotx,roty,rotz = 0.0;
 float ax,ay,az = 0.0;
 float dN,dE = 0.0;// Estimeret pos
 float dvx,dvy = 0.0;
-//float dxRaw,dyRaw,dzRaw = 0.0;
+
 float kurs,kursRaw,roll,rollRaw,pitch,pitchRaw = 0.0;
 float K = 0.99;
+float kursGyroStabiliseret;
 uint8_t systemC, gyroC, accelC, magC = 0;
 float bnoData[10];
 float lg[]={-1.0,-1.0,-1.0,-1.0,-1.0,-1.0,-1.0,-1.0,-1.0,-1.0} ;
 float br[]={-1.0,-1.0,-1.0,-1.0,-1.0,-1.0,-1.0,-1.0,-1.0,-1.0} ;
 short antalWP = 0;
 short activeWP = 0;
-struct nav_t{
-  float K; //Ønsket Kurs:Set point
-  float dist; // afatand til WP
-  float WPnr; //0
-}; nav_t nav ={0,0,0};//initialiseret
 
-struct pos_t{
-  float br;
-  float lg;
-  float ti;
-};
-pos_t pos0 ={-1.0,-1.0,0};
-//pos_t pos1 ={-1.0,-1.0,0};
+float brGps; 
+float lgGps;
+float tiGps;
+
 float sp_kurs = 0.0;
 float e = 0.0;
 float P = 1;
@@ -108,171 +91,206 @@ float I = 0;
 float D = 0;
 float ror = 0.0;
 
-void setup() 
+/* Initialiserer moduler ******************************************* */
+TinyGPSPlus gps;
+SoftwareSerial ss(RXPin,TXPin);
+
+using namespace websockets2_generic;
+WebsocketsClient client;
+
+Adafruit_BNO055 bno = Adafruit_BNO055(55, 0x29);//(id,address)
+
+void setup()
 {
-  delay(1000);
-  servo.attach(2); //D4
-  Serial.begin(115200);
-  Serial.println("Setup start");
-  //kommunikation mellem GPS og ESP8266
-  ss.begin(GPSBaud);
+    //Seriel forbindelse
+    Serial.begin(115200);
+    while (!Serial) { ;}//venter til vi har kontakt til serielporten
+    //kommunikation mellem GPS og ESP8266
+    ss.begin(GPSBaud);
+    
+    //PWM-forbindelser
+    analogWriteResolution(10);//Setter 2^10 = 1024 resolution op 
+    
+    int ip = initConnectToWifi();
 
-  //etablering af wifi forbindelsen
-  int ip = initConnectToWifi();
+    client.onMessage(onMessageCallback);
+    client.onEvent(onEventsCallback);
+    // connect to Deno-server
+    if(ip==0){ client.connect("192.168.137.1", 8000, "/ws");}//Min laptop Hotspot
+//  if(ip==1){ client.connect("192.168.87.155", 8000, "/ws");}//Hjemme
+    if(ip==2){ client.connect("192.168.43.170", 8000, "/ws");}//HUAWEI?
+    if(ip==1){ client.connect("192.168.8.220", 8000, "/ws");}//Marnav?
+    // Send a ping
+    client.ping("gps");
+
+    initBNO055(bno);
+
+}
+int i=0;
+void loop()
+{   
+    getBNO055val();
+    tWiFi = tWiFi + dt*1000;
+    if(tWiFi > WiFi_DELAY_MS){
+		tWiFi = 0;
+		sendBNOdata();
+    }
+    
+    while (ss.available() > 0){
+
+        if (gps.encode(ss.read())){ 
+        i++;
+        if (gps.location.isValid()){
+            if(i%9==0 ){//Primitiv netværks begrænsning
+				//gemmer positionsoplysninger
+				Serial1.println("Virker serial 1???????????????");
+				i=0;
+				brGps = gps.location.lat();
+				lgGps = gps.location.lng();
+				tiGps = gps.time.hour()*3600+gps.time.minute()*60+gps.time.second()+gps.time.centisecond()/100;
+				sendGPSdata(gps);       
+				}
+			}
+		} 
+	}
   
-  // run callback when messages are received
-  client.onMessage(onMessageCallback);
-
-  // run callback when events are occuring
-  client.onEvent(onEventsCallback);
-
-  // connect to Deno-server
-  if(ip==0){ client.connect("192.168.137.1", 8000, "/ws");}//Min laptop Hotspot
-  if(ip==1){ client.connect("192.168.87.155", 8000, "/ws");}//Hjemme
-  if(ip==2){ client.connect("192.168.43.170", 8000, "/ws");}//HUAWEI
-  if(ip==3){ client.connect("192.168.8.220", 8000, "/ws");}//
-  // Send a ping
-  client.ping("gps");
-
-  initBNO055(bno);
+  	client.poll();
+    
 }
 
-int i = 0;
+/* ** FUNKTIONER ** FUNKTIONER ** FUNKTIONER ** FUNKTIONER ** */
 
-void loop() 
-{  
-  getBNO055val();
-  
-  // Sends information every time a new sentence is correctly encoded.
-  while (ss.available() > 0){
-    if (gps.encode(ss.read())){ 
-      i++;
-      if (gps.location.isValid()){
-        if(i%9==0 ){//Primitiv netværks begrænsning
-          //gemmer positionsoplysninger
-          pos0={
-            gps.location.lat(),
-            gps.location.lng(),
-            gps.time.hour()*3600+gps.time.minute()*60+gps.time.second()+gps.time.centisecond()/100
-          };
-
-          sendGPSdata(gps);       
-  } } } }
-  
-  client.poll();
-}
-
-//**************** FUNKTIONER ************************
 //////////////////////Kompas///////////////////////////////
 
 void initBNO055(Adafruit_BNO055 bno){
   /* Initialise the sensor */
-  
+  delay(1000);
   if (!bno.begin()){
+
     Serial.print("Ooops, no BNO055 detected ... Check your wiring or I2C ADDR!");
     delay(1000);
     ESP. restart();
   //  while (1);
   }
-  delay(1500);
+  Serial.print("Succesfuld forbindelse til BNO055");
+  delay(1000);
   bno.setExtCrystalUse(true); /* Bruger microprocessorens  clock */ 
 }
 
 void getBNO055val(){
-  /* Get a new sensor vector*/
-  imu::Vector<3> g = bno.getVector( Adafruit_BNO055::VECTOR_GYROSCOPE);
-  imu::Vector<3> m = bno.getVector( Adafruit_BNO055::VECTOR_MAGNETOMETER);
-  imu::Vector<3> a = bno.getVector( Adafruit_BNO055::VECTOR_ACCELEROMETER);
-  
-  /* Beregner tidsdifferencen dt mellem læsninger */
-  t1 = millis(); 
-  if(t0==0){t0 = t1;}//initialiserer
-  dt =(t1-t0);
-  dt =dt/1000.0; /* i sek. */
-  t0 = t1;
+    /* Get a new sensor vector*/
+    imu::Vector<3> g = bno.getVector( Adafruit_BNO055::VECTOR_GYROSCOPE);
+    imu::Vector<3> m = bno.getVector( Adafruit_BNO055::VECTOR_MAGNETOMETER);
+    imu::Vector<3> a = bno.getVector( Adafruit_BNO055::VECTOR_ACCELEROMETER);
 
-/* Henter data fra BNO055 */
-/* NB! akser fra 'euler'-koordinater til 'fly-koordinater' (dvs. x-akse frem & z-akse NEDAD!) dvs y- og z- akser skifter fortegn) 
- * Årsag: for at få pos ROT om z-akse i samme retn. som kompassets pos. retn)
- * NB! acc er neg da BNO055 måler reaktionskraft.
- */
-  rotx = g[0];
-  roty = -g[1];
-  rotz = -g[2];
-  
-  ax = -a[0];
-  ay = -(-a[1]);
-  az = -(-a[2]); 
+    /* Beregner tidsdifferencen dt mellem læsninger */
+    t1 = millis(); 
+    if(t0==0){t0 = t1;}//initialiserer
+    dt =(t1-t0);
+    dt =dt/1000.0; /* i sek. */
+    t0 = t1;
 
-  mx = m[0];
-  my = -m[1];
-  mz = -m[2];
+    /* Henter data fra BNO055 */
+    /* NB! akser fra 'euler'-koordinater til 'fly-koordinater' (dvs. x-akse frem & z-akse NEDAD!) dvs y- og z- akser skifter fortegn) 
+    * Årsag: for at få pos ROT om z-akse i samme retn. som kompassets pos. retn)
+    * NB! acc er neg da BNO055 måler reaktionskraft.
+    */
+    rotx = g[0];
+    roty = -g[1];
+    rotz = -g[2];
 
-  //Beregner gyroens kurs fra Rate Of Turn
-  gx = gx + rotx*dt;
-  gy = gy + roty*dt;
-  gz = gz + rotz*dt;
+    ax = -a[0];
+    ay = -(-a[1]);
+    az = -(-a[2]); 
 
-  // Roll, Pitch og Yaw (kurs) beregnes - bare trigonometri
-  float RollRaw = atan2(ay,az); //rollRaw i radianer
-  rollRaw = RollRaw*180/PI;
-  pitchRaw = atan2(-ax,(ay*sin(RollRaw)+az*cos(RollRaw)))*180/PI; 
-  kursRaw = atan2(-my,mx)*180/PI;
+    mx = m[0];
+    my = -m[1];
+    mz = -m[2];
 
-  //Comperatorfilter på roll, og pitch, 99% gyro, 1% acc
-  float k=0.99;//procent gyro
-  roll = (roll + rotx*dt)*k + rollRaw*(1-k); 
-  pitch = (pitch + roty*dt)*k + pitchRaw*(1-k);
+    //Beregner gyroens kurs fra Rate Of Turn
+    gx = gx + rotx*dt;
+    gy = gy + roty*dt;
+    gz = gz + rotz*dt;
 
-  //'Gyrostabiliserede' værdier
-  //roll & pitch i radianer
-  float Roll = roll*PI/180;
-  float Pitch =pitch*PI/180;
+    // Roll, Pitch og Yaw (kurs) beregnes - bare trigonometri
+    float RollRaw = atan2(ay,az); //rollRaw i radianer
+    rollRaw = RollRaw*180/PI;
+    pitchRaw = atan2(-ax,(ay*sin(RollRaw)+az*cos(RollRaw)))*180/PI; 
+    kursRaw = atan2(-my,mx)*180/PI;
 
-  //tilt kompenseret kurs.(Jeg kan vise dig beregningen hvis du er interesseret Jørgen - fås direkte ud fra rotationsmatriserne for roll og pitch)  
-  //(Findes også mange steder på nettet! Pas dog på wikipiedia - der har de byttet om på roll, pitch og yaw... Hmmm det ligner dem ellers ikke...) 
-  // NB! her anvendes de gode! værdier for roll og pitch i radianer!
-  float X = mx*cos(Pitch) + mz*sin(Pitch);
-  float Y = mx*sin(Roll)*sin(Pitch) + my*cos(Roll) - mz * sin(Roll)*cos(Pitch);
-  float kursGyroStabiliseret = (atan2(-Y,X)*180/PI);
-  float gyrokurs = kurs +rotz*dt;
-  
-//Beregner hastighedsændringer fra accelerometret
-  dvx = (ax*cos(Pitch) + az*sin(Pitch))*dt;
-  dvy = (ax*sin(Roll)*sin(Pitch) + ay*cos(Roll) - az * sin(Roll)*cos(Pitch))*dt;
+    //Comperatorfilter på roll, og pitch, 99% gyro, 1% acc
+    float k=0.99;//procent gyro
+    roll = (roll + rotx*dt)*k + rollRaw*(1-k); 
+    pitch = (pitch + roty*dt)*k + pitchRaw*(1-k);
 
-  // løser et fjollet diskontinuitetsproblem mellem gyro og mag. (Første del)
-  // får mag til at være kontinuært over 180
-  if(gyrokurs - kursGyroStabiliseret < -180){
-    while (gyrokurs - kursGyroStabiliseret < -180){
-      kursGyroStabiliseret = kursGyroStabiliseret -360.0;
+    //'Gyrostabiliserede' værdier
+    //roll & pitch i radianer
+    float Roll = roll*PI/180;
+    float Pitch =pitch*PI/180;
+
+    //tilt kompenseret kurs.(Jeg kan vise dig beregningen hvis du er interesseret Jørgen - fås direkte ud fra rotationsmatriserne for roll og pitch)  
+    //(Findes også mange steder på nettet! Pas dog på wikipiedia - der har de byttet om på roll, pitch og yaw... Hmmm det ligner dem ellers ikke...) 
+    // NB! her anvendes de gode! værdier for roll og pitch i radianer!
+    float X = mx*cos(Pitch) + mz*sin(Pitch);
+    float Y = mx*sin(Roll)*sin(Pitch) + my*cos(Roll) - mz * sin(Roll)*cos(Pitch);
+    kursGyroStabiliseret = (atan2(-Y,X)*180/PI);
+    float gyrokurs = kurs +rotz*dt;
+
+    //Beregner hastighedsændringer fra accelerometret
+    dvx = (ax*cos(Pitch) + az*sin(Pitch))*dt;
+    dvy = (ax*sin(Roll)*sin(Pitch) + ay*cos(Roll) - az * sin(Roll)*cos(Pitch))*dt;
+
+    // løser et fjollet diskontinuitetsproblem mellem gyro og mag. (Første del)
+    // får mag til at være kontinuært over 180
+    if(gyrokurs - kursGyroStabiliseret < -180){
+        while (gyrokurs - kursGyroStabiliseret < -180){
+            kursGyroStabiliseret = kursGyroStabiliseret -360.0;
+        }
     }
-  }
-  else if(gyrokurs - kursGyroStabiliseret > 180){
-    while (gyrokurs - kursGyroStabiliseret > 180){
-      kursGyroStabiliseret = kursGyroStabiliseret +360.0;
+    else if(gyrokurs - kursGyroStabiliseret > 180){
+        while (gyrokurs - kursGyroStabiliseret > 180){
+            kursGyroStabiliseret = kursGyroStabiliseret +360.0;
+        }
     }
-  }
-  kurs = (K*gyrokurs + (1-K)*kursGyroStabiliseret);
+    kurs = (K*gyrokurs + (1-K)*kursGyroStabiliseret);
+
     
-  //Auto kalibreringens status: (integer) 0=lavest niveau (forkast data), 3=højste niveau (fuldt kalibreret data)
-  bno.getCalibration(&systemC, &gyroC, &accelC, &magC);
-  
-  
-  //KUN HVIS GPS SIGNALER
-  if(pos0.br>0){ 
-    //Bestikregning
-    dN += cos(-kurs*PI/180)*dt; // pos
-    dE += -sin(-kurs*PI/180)*cos((pos0.br+pos0.br)/2)*dt;
-   // Serial.print("Bestik: "); Serial.print(dN); Serial.print(", "); Serial.println(dE);
+    //Auto kalibreringens status: (integer) 0=lavest niveau (forkast data), 3=højste niveau (fuldt kalibreret data)
+    bno.getCalibration(&systemC, &gyroC, &accelC, &magC);
 
-    if(AUTOMODE){
-      //TO DO Beregner kurs som bestikregning
-       
-    }
-    if(antalWP>0){
-            float br_forandring = br[activeWP]- pos0.br;
-            float afvigning = (lg[activeWP]  - pos0.lg)*cos(pos0.br*PI/180);//bruger bredde i stedet for middelbredde
+    // //Sender Data Udskriver
+    // tWiFi = tWiFi + dt*1000;
+    // if(tWiFi > WiFi_DELAY_MS){
+    //     tWiFi = 0;
+    //     const int capacity = JSON_OBJECT_SIZE(10+2);
+    //     StaticJsonDocument<capacity> doc;
+    //     doc["name"] = "bno";
+    //     doc["roll"] = roll;
+    //     doc["pitch"] = pitch;
+    //     doc["dt"]= dt;
+    //     doc["kurs"] = kurs;
+    //     doc["rawkurs"] = kursRaw;
+    //     doc["rawkursstab"] = kursGyroStabiliseret;
+    //     doc["sp"]=sp_kurs;
+    //     doc["ror"]= ror;
+    //     doc["kal"]= gyroC*1000+accelC*100+magC*10+systemC;
+    //     String output = "";
+    //     serializeJson(doc, output);
+    //     client.send( output);
+
+    // }
+
+    
+    //KUN HVIS GPS SIGNALER
+    if(brGps>0){ 
+        //Bestikregning
+        dN += cos(-kurs*PI/180)*dt; // pos
+        dE += -sin(-kurs*PI/180)*cos(brGps)*dt;
+        // Serial.print("Bestik: "); Serial.print(dN); Serial.print(", "); Serial.println(dE);
+
+        if(antalWP>0){
+            float br_forandring = br[activeWP]- brGps;
+            float afvigning = (lg[activeWP]  - lgGps)*cos(brGps*PI/180);//bruger bredde i stedet for middelbredde
             sp_kurs = atan2(afvigning,br_forandring)*180/PI;
 
             Serial.print(" , Set Point: ");  Serial.print(sp_kurs,6);
@@ -287,63 +305,68 @@ void getBNO055val(){
             
             int udlg = int (90 + 2*round(ror));//ganger med 2 da der er er noget i vejen med min servo
             Serial.print(" , udlaeg: ");  Serial.println(udlg);
-            tb.print("udlg:"); tb.println(udlg);
-            servo.write(udlg);
-          }
-  }
-  
- 
-  tWiFi = tWiFi + dt*1000;
-  if(tWiFi > WiFi_DELAY_MS){
-    tWiFi = 0;
-    const int capacity = JSON_OBJECT_SIZE(10+2);
-          StaticJsonDocument<capacity> doc;
-          doc["name"] = "bno";
-          doc["roll"] = roll;
-          doc["pitch"] = pitch;
-          doc["dt"]= dt;
-          doc["kurs"] = kurs;
-          doc["rawkurs"] = kursRaw;
-          doc["rawkursstab"] = kursGyroStabiliseret;
-          doc["sp"]=sp_kurs;
-          doc["ror"]= ror;
-          doc["kal"]= gyroC*1000+accelC*100+magC*10+systemC;
-          String output = "";
-          serializeJson(doc, output);
-          client.send( output);
-  }
+            analogWrite(RORpwm,udlg);
+            analogWrite(RORpwm1,udlg);
+			
+        }
+    }
 
   delay(BNO055_SAMPLERATE_DELAY_MS);
   //return kurs;
-}
 
+}
+void sendBNOdata(){
+  
+
+        String str = "bno,";
+		str += kurs; str += ",";//0
+		str += roll;str += ",";//1
+		str += pitch; str += ",";//2
+		str += String(dt,3); str += ",";//3
+		str += gyroC*1000+accelC*100+magC*10+systemC; str += ",";//4
+		str += String(kursRaw,1); str += ",";//5
+		str += kursGyroStabiliseret; str += ",";//6
+		str += sp_kurs; str += ",";//7
+		str += ror; //8
+        // str += ",roll:";str += roll;
+		// str += ",pitch:";str += pitch; 
+		// str += ",dt:";str += String(dt,3);
+		// str += ",kurs:";str += kurs;
+		// str += ",";
+        client.send( str);
+}
 ////////////////////// GPS ////////////////////////////////
 void sendGPSdata(TinyGPSPlus gps){
-          
-          const int capacity = JSON_OBJECT_SIZE(10+2);
-          StaticJsonDocument<capacity> doc;
-          doc["name"] = "navigation";
-          doc["lat"] = String(gps.location.lat()*10000000);
-          doc["lng"] = String(gps.location.lng()*10000000);
-          doc["lolationvalid"]= gps.location.isValid();
-          doc["gpscourse"] = gps.course.isValid() ? gps.course.deg() : -1000.0;
-          doc["gpsspeed"] = gps.speed.isValid() ? gps.speed.kmph() : -1000.0;
-          doc["hdop"]= gps.hdop.hdop();
-          doc["sat"] = gps.satellites.value();
-          doc["kurs"] = kurs;
-          doc["kal"]= gyroC*1000+accelC*100+magC*10+systemC;
-          String output = "";
-          serializeJson(doc, output);
-          client.send( output);
+	if(gps.location.isValid()){
+
+		//   doc["name"] = "navigation";
+		//   doc["lat"] = String(gps.location.lat()*10000000);
+		//   doc["lng"] = String(gps.location.lng()*10000000);
+		//   doc["lolationvalid"]= gps.location.isValid();
+		//   doc["hdop"]= gps.hdop.hdop();
+		//   doc["sat"] = gps.satellites.value();
+		//   doc["gpscourse"] = gps.course.isValid() ? gps.course.deg() : -1000.0;
+		//   doc["gpsspeed"] = gps.speed.isValid() ? gps.speed.kmph() : -1000.0;
+
+		//værdier sendes som kommasepereret streng - csv-stil
+		String str = "gps,";
+		str += String(gps.location.lat(),6);str += ",";
+		str += String(gps.location.lng(),6);str += ",";
+		str += gps.hdop.hdop(); str += ",";
+		str += gps.satellites.value();str += ",";
+		str += gps.course.isValid()? gps.course.deg():NAN;str += ",";
+		str += gps.speed.isValid()? gps.speed.kmph():NAN ;
+		
+        client.send(str);	
+	}
 }
 
-
-
-////////////////////// websoket2 //////////////////////////
+////////////////////// WiFi + websoket2 //////////////////////////
 int initConnectToWifi(){
   // ESP8266 Connect to wifi
+ 
   delay(5000);
-  for (byte j = 0; j < 3; j = i + 1) {
+  for (byte j = 0; j < 3; j++) {
     
     if(j==0){
       WiFi.begin("SKIB1","u530}8T9");
@@ -357,9 +380,7 @@ int initConnectToWifi(){
       WiFi.begin("HUAWEI","1q2w3e4r");
       Serial.println("Prøver at forbinde til mobiltelefon");
     }
-  
 
-    // Wait some time to connect to wifi
     for (int i = 0; i < 10 && WiFi.status() != WL_CONNECTED; i++) 
     {
       Serial.print(".");
@@ -417,11 +438,6 @@ void onMessageCallback(WebsocketsMessage message)
   WiFi_DELAY_MS = 100;
   K = doc1["k"];
    K=0.99;
- 
-  
-  //Serial.print(n);
- 
-  //Serial.print(", ");
   i= 0;
   while(i < antalWP ){
    Serial.print(br[i],6);
@@ -432,7 +448,6 @@ void onMessageCallback(WebsocketsMessage message)
   Serial.println();
 
 }
-
 void onEventsCallback(WebsocketsEvent event, String data) 
 {
   if (event == WebsocketsEvent::ConnectionOpened) 

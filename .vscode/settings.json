@@ -1,0 +1,10 @@
+{
+    "files.associations": {
+        "*.ts": "typescript",
+        "*.tcc": "cpp",
+        "string": "cpp",
+        "sstream": "cpp",
+        "optional": "cpp",
+        "system_error": "cpp"
+    }
+}
