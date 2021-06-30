@@ -118,8 +118,8 @@ void setup()
     // connect to Deno-server
     if(ip==0){ client.connect("192.168.137.1", 8000, "/ws");}//Min laptop Hotspot
 //  if(ip==1){ client.connect("192.168.87.155", 8000, "/ws");}//Hjemme
-    if(ip==2){ client.connect("192.168.43.170", 8000, "/ws");}//HUAWEI?
     if(ip==1){ client.connect("192.168.8.220", 8000, "/ws");}//Marnav?
+    if(ip==2){ client.connect("192.168.43.170", 8000, "/ws");}//HUAWEI?
     // Send a ping
     client.ping("gps");
 
@@ -143,7 +143,6 @@ void loop()
         if (gps.location.isValid()){
             if(i%9==0 ){//Primitiv netværks begrænsning
 				//gemmer positionsoplysninger
-				Serial1.println("Virker serial 1???????????????");
 				i=0;
 				brGps = gps.location.lat();
 				lgGps = gps.location.lng();
@@ -318,46 +317,33 @@ void getBNO055val(){
 void sendBNOdata(){
   
 
-        String str = "bno,";
-		str += kurs; str += ",";//0
-		str += roll;str += ",";//1
-		str += pitch; str += ",";//2
-		str += String(dt,3); str += ",";//3
-		str += gyroC*1000+accelC*100+magC*10+systemC; str += ",";//4
-		str += String(kursRaw,1); str += ",";//5
-		str += kursGyroStabiliseret; str += ",";//6
-		str += sp_kurs; str += ",";//7
+    String str = "bno;";
+		str += kurs; str += ";";//0
+		str += roll;str += ";";//1
+		str += pitch; str += ";";//2
+		str += String(dt,3); str += ";";//3
+		str += gyroC*1000+accelC*100+magC*10+systemC; str += ";";//4
+		str += String(kursRaw,1); str += ";";//5
+		str += kursGyroStabiliseret; str += ";";//6
+		str += sp_kurs; str += ";";//7
 		str += ror; //8
-        // str += ",roll:";str += roll;
-		// str += ",pitch:";str += pitch; 
-		// str += ",dt:";str += String(dt,3);
-		// str += ",kurs:";str += kurs;
-		// str += ",";
-        client.send( str);
+    client.send( str);
 }
 ////////////////////// GPS ////////////////////////////////
 void sendGPSdata(TinyGPSPlus gps){
 	if(gps.location.isValid()){
 
-		//   doc["name"] = "navigation";
-		//   doc["lat"] = String(gps.location.lat()*10000000);
-		//   doc["lng"] = String(gps.location.lng()*10000000);
-		//   doc["lolationvalid"]= gps.location.isValid();
-		//   doc["hdop"]= gps.hdop.hdop();
-		//   doc["sat"] = gps.satellites.value();
-		//   doc["gpscourse"] = gps.course.isValid() ? gps.course.deg() : -1000.0;
-		//   doc["gpsspeed"] = gps.speed.isValid() ? gps.speed.kmph() : -1000.0;
 
-		//værdier sendes som kommasepereret streng - csv-stil
-		String str = "gps,";
-		str += String(gps.location.lat(),6);str += ",";
-		str += String(gps.location.lng(),6);str += ",";
-		str += gps.hdop.hdop(); str += ",";
-		str += gps.satellites.value();str += ",";
-		str += gps.course.isValid()? gps.course.deg():NAN;str += ",";
-		str += gps.speed.isValid()? gps.speed.kmph():NAN ;
+		//værdier sendes som semikolonsepereret streng - csv-stil
+		String str = "gps;";//0
+		str += String(gps.location.lat(),6);str += ";";//1
+		str += String(gps.location.lng(),6);str += ";";//2
+		str += gps.hdop.hdop(); str += ";";//3
+		str += gps.satellites.value();str += ";";//4
+		str += gps.course.isValid()? gps.course.deg():NAN;str += ";";//5
+		str += gps.speed.isValid()? gps.speed.kmph():NAN ;//6
 		
-        client.send(str);	
+    client.send(str);	
 	}
 }
 
@@ -437,7 +423,7 @@ void onMessageCallback(WebsocketsMessage message)
  // WiFi_DELAY_MS = doc1["rate"];
   WiFi_DELAY_MS = 100;
   K = doc1["k"];
-   K=0.99;
+  K=0.99;
   i= 0;
   while(i < antalWP ){
    Serial.print(br[i],6);
