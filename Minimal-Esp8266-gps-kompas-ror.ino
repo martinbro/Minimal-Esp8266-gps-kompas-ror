@@ -57,7 +57,7 @@ static const int RXPin = 13, TXPin = 15;// GPS: D8 (RX), D7(TX)
 static const uint16_t GPSBaud = 9600;
 
 /* Globale variable ************************************************ */
-uint16_t BNO055_SAMPLERATE_DELAY_MS = 5;
+uint16_t BNO055_SAMPLERATE_DELAY_MS = 10;
 uint16_t WiFi_DELAY_MS = 100;
 static uint32_t t0, t0_main_loop = 0 ;
 static uint32_t t1, t1_main_loop, tWiFi = 0;
@@ -127,33 +127,32 @@ void setup()
 
 }
 int i=0;
+tWiFi = millis();
 void loop()
 {   
-		getBNO055val();
-		tWiFi = tWiFi + dt*1000;
-		if(tWiFi > WiFi_DELAY_MS){
-		tWiFi = 0;
-		sendBNOdata();
-		}
-		
-		while (ss.available() > 0){
+	getBNO055val();
 
-				if (gps.encode(ss.read())){ 
-				i++;
-				if (gps.location.isValid()){
-						if(i%9==0 ){//Primitiv netværks begrænsning
-				//gemmer positionsoplysninger
-				i=0;
-				brGps = gps.location.lat();
-				lgGps = gps.location.lng();
-				tiGps = gps.time.hour()*3600+gps.time.minute()*60+gps.time.second()+gps.time.centisecond()/100;
-				sendGPSdata(gps);       
+	if((millis()-tWiFi)*1000 > WiFi_DELAY_MS){//begrænser netværkstrafik
+		sendBNOdata();
+	}
+		
+	while (ss.available() > 0){
+		if (gps.encode(ss.read())){ 
+			i++;
+			if (gps.location.isValid()){
+				if(i%9==0 ){//Primitiv netværks begrænsning
+					//gemmer positionsoplysninger
+					i=0;
+					brGps = gps.location.lat();
+					lgGps = gps.location.lng();
+					tiGps = gps.time.hour()*3600+gps.time.minute()*60+gps.time.second()+gps.time.centisecond()/100;
+					sendGPSdata(gps);       
 				}
 			}
 		} 
 	}
 	
-		client.poll();
+	client.poll();
 		
 }
 
@@ -176,8 +175,10 @@ void initBNO055(Adafruit_BNO055 bno){
 	bno.setExtCrystalUse(true); /* Bruger microprocessorens  clock */ 
 }
 
-void getBNO055val(){
+bool getBNO055val(){
 		/* Get a new sensor vector*/
+		if(BNO055_SAMPLERATE_DELAY_MS <(millis()-t0)*1000)return false;
+		
 		imu::Vector<3> g = bno.getVector( Adafruit_BNO055::VECTOR_GYROSCOPE);
 		imu::Vector<3> m = bno.getVector( Adafruit_BNO055::VECTOR_MAGNETOMETER);
 		imu::Vector<3> a = bno.getVector( Adafruit_BNO055::VECTOR_ACCELEROMETER);
@@ -288,13 +289,12 @@ void getBNO055val(){
 				}
 		}
 
-	delay(BNO055_SAMPLERATE_DELAY_MS);
-	//return kurs;
+	//delay(BNO055_SAMPLERATE_DELAY_MS);
+	return true;
 
 }
 void sendBNOdata(){
-	
-
+		tWiFi = millis();
 		String str = "bno,";
 		str += kurs; str += ",";//0
 		str += roll;str += ",";//1
@@ -378,8 +378,7 @@ void onMessageCallback(WebsocketsMessage message)
 	String besked = message.data();
 	
 	float lg_wp, br_wp;
-	float rate = -1;
-	float k_val = -1;
+
     
 	int r=0; //besked nr
 	int nr = 0;
@@ -393,20 +392,25 @@ void onMessageCallback(WebsocketsMessage message)
 				{
 				case 0:
 					lg_wp = besked.substring(r,i).toFloat();
-					nyPos=true;
+					
 					break;
 				case 1:
 					br_wp = besked.substring(r,i).toFloat();
 					break;
 				case 2:
-					rate = besked.substring(r,i).toFloat();
+					WiFi_DELAY_MS = besked.substring(r,i).toInt();
+					Serial.print("new WiFi_DELAY:");Serial.print(WiFi_DELAY_MS);
 					break;
 				case 3:
-					k_val = besked.substring(r,i).toFloat();
-					
+						float k_value = 0;
+						k_value = besked.substring(r,i).toFloat();
+						if(k_value>0 ){
+							if(k_value>1.0) break;
+							K = k_value;
+							Serial.print("new K: ");Serial.print(K);
+						}
 					break;
-				default:
-				    break;
+
 				}
 			}
 			r = i+1;
@@ -439,9 +443,10 @@ void onMessageCallback(WebsocketsMessage message)
  
 
 //	String n = doc1["name"];
- 	WiFi_DELAY_MS = rate;
+ 	//WiFi_DELAY_MS = (int) rate;
+
 //	WiFi_DELAY_MS = 100;
-	K = k_val;
+	//K = k_val;
 //	K=0.99;
 	i= 0;
 	while(i < antalWP ){
